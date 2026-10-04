@@ -237,5 +237,125 @@ Artinya 50 goroutine selesai dalam sekitar 1,14 detik. Ada satu respons API yang
 
 Jumlah hit tidak selalu sama pada setiap eksekusi. DadJokes biasanya mengirim lelucon acak, sehingga bisa saja semua respons berbeda dan hasilnya menjadi `Cache hit: 0` serta `Cache miss: 50`.
 
+## Kode Program
+```go
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"sync"
+	"time"
+)
+
+const numberOfRequests = 50
+
+type Response struct {
+	ID     string `json:"id"`
+	Joke   string `json:"joke"`
+	Status int    `json:"status"`
+}
+
+type Data struct {
+	ID      string
+	Payload string
+}
+
+type Cache struct {
+	mu   sync.Mutex
+	m    map[string]*Data
+	hit  int
+	miss int
+}
+
+func (c *Cache) Get(bodyBytes []byte) (Data, bool) {
+	key := string(bodyBytes)
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if data, exists := c.m[key]; exists {
+		c.hit++
+		return *data, true
+	}
+
+	var responseObject Response
+	if err := json.Unmarshal(bodyBytes, &responseObject); err != nil {
+		return Data{}, false
+	}
+
+	data := &Data{
+		ID:      key,
+		Payload: responseObject.Joke,
+	}
+	c.m[key] = data
+	c.miss++
+	return *data, true
+}
+
+func (c *Cache) Stats() (hit, miss int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.hit, c.miss
+}
+
+func main() {
+	start := time.Now()
+	cache := Cache{m: make(map[string]*Data)}
+	client := &http.Client{Timeout: 10 * time.Second}
+
+	var wg sync.WaitGroup
+	wg.Add(numberOfRequests)
+	for i := 0; i < numberOfRequests; i++ {
+		go getBadJoke(&wg, client, &cache)
+	}
+	wg.Wait()
+
+	hit, miss := cache.Stats()
+	fmt.Printf("Processes took %s\n", time.Since(start))
+	fmt.Printf("Cache hit: %d\n", hit)
+	fmt.Printf("Cache miss: %d\n", miss)
+}
+
+func getBadJoke(wg *sync.WaitGroup, client *http.Client, cache *Cache) {
+	defer wg.Done()
+
+	request, err := http.NewRequest(http.MethodGet, "https://icanhazdadjoke.com/", nil)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	request.Header.Set("Accept", "application/json")
+
+	response, err := client.Do(request)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	defer response.Body.Close()
+
+	bodyBytes, err := io.ReadAll(response.Body)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	data, ok := cache.Get(bodyBytes)
+	if !ok {
+		fmt.Println("failed to process DadJokes response")
+		return
+	}
+
+	fmt.Println(data.Payload)
+}
+```
+
+
 ## Screenshot
+<img width="992" height="494" alt="pasted file" src="https://github.com/user-attachments/assets/7ca035bf-57b8-457d-a290-5c764aed6642" />
+
+<img width="992" height="494" alt="pasted file(1)" src="https://github.com/user-attachments/assets/916dfab2-de94-4694-a842-89117fa440d2" />
+
 
